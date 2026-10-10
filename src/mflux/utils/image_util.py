@@ -266,28 +266,38 @@ class ImageUtil:
         file_path = ImageUtil.resolve_output_path(path=path, overwrite=overwrite)
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Save the image itself. A failure to write the output file is a failed
+        # run: re-raise so callers (and CLIs) exit non-zero instead of swallowing
+        # the error and leaving no file on disk (issue #830).
         try:
-            # Save image without metadata first
             image.save(file_path)
             log.info(f"Image saved successfully at: {file_path}")
+        except Exception as e:  # noqa: BLE001
+            log.error(f"Error saving image: {e}")
+            raise
 
-            # Export metadata to a dedicated sidecar path so it never
-            # collides with model-specific JSON artifacts like FIBO prompts.
-            if export_json_metadata:
+        # Export metadata to a dedicated sidecar path so it never
+        # collides with model-specific JSON artifacts like FIBO prompts.
+        # Sidecar / embedding failures are non-fatal: the image was written.
+        if export_json_metadata:
+            try:
                 metadata_path = file_path.with_suffix(".metadata.json")
                 with open(metadata_path, "w") as json_file:
                     json.dump(metadata, json_file, indent=4)
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"Error writing metadata sidecar: {e}")
 
-            # Embed metadata in multiple formats for maximum compatibility.
-            # embed_metadata_enabled is the --no-exif opt-out: the parser flips it
-            # once at parse time, so every save site honours the flag without each of
-            # the ~25 CLIs having to thread a kwarg through (issue #437).
-            if metadata is not None and ImageUtil.embed_metadata_enabled:
+        # Embed metadata in multiple formats for maximum compatibility.
+        # embed_metadata_enabled is the --no-exif opt-out: the parser flips it
+        # once at parse time, so every save site honours the flag without each of
+        # the ~25 CLIs having to thread a kwarg through (issue #437).
+        if metadata is not None and ImageUtil.embed_metadata_enabled:
+            try:
                 ImageUtil._embed_metadata(metadata, file_path)
                 MetadataBuilder.embed_metadata(metadata, file_path)
                 log.info(f"Metadata embedded successfully at: {file_path}")
-        except Exception as e:  # noqa: BLE001
-            log.error(f"Error saving image: {e}")
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"Error embedding metadata: {e}")
 
     @staticmethod
     def _embed_metadata(metadata: dict, path: str | Path) -> None:
